@@ -1,15 +1,23 @@
 "use client";
 
 import { useState, useMemo, useCallback } from "react";
-import GraphCanvas from "@/components/GraphCanvas";
-import LogoAnimation from "@/components/LogoAnimation";
-import InterestOnboarding from "@/components/InterestOnboarding";
-import { activities, interests } from "@/data/activities";
+import SurpriseCard from "../components/SurpriseCard";
+import GraphCanvas from "../components/GraphCanvas";
+import LogoAnimation from "../components/LogoAnimation";
+import InterestOnboarding from "../components/InterestOnboarding";
+import SavedDrawer from "../components/SavedDrawer";
+import { activities, interests } from "../data/activities";
 import {
   buildInterestNodes,
   buildActivityNodes,
   buildVisibleEdges,
 } from "@/lib/graphUtils";
+import { getSaved, toggleSaved, isSaved } from "@/lib/storage";
+import {
+  getWhyItFits,
+  getBeginnerChecklist,
+  getSimilarActivities,
+} from "@/lib/recommendations";
 
 type Screen = "splash" | "onboarding" | "app";
 
@@ -45,12 +53,6 @@ const ACTIVITY_COLORS: Record<string, string> = {
   "cooking-club": "#D4537E",
 };
 
-const costLabel: Record<string, string> = {
-  free: "Free",
-  low: "Low cost",
-  medium: "Some gear",
-  high: "Investment",
-};
 const diffLabel: Record<string, string> = {
   beginner: "Beginner-friendly",
   intermediate: "Some experience",
@@ -61,6 +63,12 @@ const envLabel: Record<string, string> = {
   outdoors: "Outdoors",
   both: "In or out",
 };
+const costLabel: Record<string, string> = {
+  free: "Free",
+  low: "Low cost",
+  medium: "Some gear",
+  high: "Investment",
+};
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("splash");
@@ -69,27 +77,31 @@ export default function Home() {
   const [expandedInterests, setExpandedInterests] = useState<Set<string>>(
     new Set(),
   );
+  const [savedIds, setSavedIds] = useState<string[]>(() => getSaved());
+  const [showSaved, setShowSaved] = useState(false);
+  const [randomReason, setRandomReason] = useState<string | null>(null);
+  const [surpriseActivity, setSurpriseActivity] = useState<
+    (typeof activities)[0] | null
+  >(null);
 
-  // ── Onboarding ────────────────────────────────────────
+  // ── Onboarding ─────────────────────────────────────────
   function toggleInterest(id: string) {
     setSelectedInterests((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
     );
   }
-
   function handleConfirmInterests() {
     setExpandedInterests(new Set());
     setSelectedId(null);
+    setRandomReason(null);
     setScreen("app");
   }
 
-  // ── Graph node/edge construction ──────────────────────
+  // ── Graph construction ─────────────────────────────────
   const interestNodes = useMemo(
     () => buildInterestNodes(selectedInterests),
     [selectedInterests],
   );
-
-  // Map interest id → its position (needed for fan layout)
   const interestPosMap = useMemo(() => {
     const map: Record<string, { x: number; y: number }> = {};
     for (const n of interestNodes) map[n.id] = n.position;
@@ -102,7 +114,6 @@ export default function Home() {
       const pos = interestPosMap[id];
       if (pos) nodes.push(...buildActivityNodes(id, pos, 300, 260));
     }
-    // Deduplicate by id (activities shared across interests)
     const seen = new Set<string>();
     return nodes.filter((n) => {
       if (seen.has(n.id)) return false;
@@ -115,57 +126,59 @@ export default function Home() {
     () => [...interestNodes, ...activityNodes],
     [interestNodes, activityNodes],
   );
-
   const visibleIds = useMemo(
     () => new Set(allNodes.map((n) => n.id)),
     [allNodes],
   );
-
   const graphEdges = useMemo(
     () => buildVisibleEdges(visibleIds, selectedInterests),
     [visibleIds, selectedInterests],
   );
 
-  // ── Node tap: interests expand, activities select ─────
+  // ── Node tap ───────────────────────────────────────────
   const handleSelectNode = useCallback((id: string) => {
     const isInterest = interests.some((i) => i.id === id);
+    setRandomReason(null);
     if (isInterest) {
       setExpandedInterests((prev) => {
         const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
+        if (next.has(id)) {
+          next.delete(id);
+        } else {
+          next.add(id);
+        }
         return next;
       });
-      setSelectedId(id);
-    } else {
-      setSelectedId(id);
     }
+    setSelectedId(id);
   }, []);
 
-  // ── Random activity from expanded interests ───────────
+  // ── Random activity ────────────────────────────────────
   function handleRandom() {
-    const pool =
-      expandedInterests.size > 0
-        ? activityNodes
-        : activities.filter((a) =>
-            selectedInterests.some((si) =>
-              interests.find((i) => i.id === si)?.activityIds.includes(a.id),
-            ),
-          );
+    const pool = activities.filter((a) =>
+      selectedInterests.some((si) =>
+        interests.find((i) => i.id === si)?.activityIds.includes(a.id),
+      ),
+    );
     if (pool.length === 0) return;
     const pick = pool[Math.floor(Math.random() * pool.length)];
-    // Make sure the interest is expanded so we can see it
-    const parentInterest = interests.find(
+    const parent = interests.find(
       (i) =>
         i.activityIds.includes(pick.id) && selectedInterests.includes(i.id),
     );
-    if (parentInterest && !expandedInterests.has(parentInterest.id)) {
-      setExpandedInterests((prev) => new Set([...prev, parentInterest.id]));
-    }
+    if (parent) setExpandedInterests((prev) => new Set([...prev, parent.id]));
+    const reason = getWhyItFits(pick, selectedInterests);
+    setRandomReason(reason);
     setSelectedId(pick.id);
+    setSurpriseActivity(pick);
   }
 
-  // ── Detail panel data ─────────────────────────────────
+  // ── Save / unsave ──────────────────────────────────────
+  function handleToggleSave(id: string) {
+    setSavedIds(toggleSaved(id));
+  }
+
+  // ── Detail data ────────────────────────────────────────
   const detail = useMemo(() => {
     if (!selectedId) return null;
     const activity = activities.find((a) => a.id === selectedId);
@@ -180,13 +193,26 @@ export default function Home() {
     : "#7F77DD";
 
   const isExpanded = selectedId ? expandedInterests.has(selectedId) : false;
+  const activityDetail = detail?.type === "activity" ? detail.data : null;
 
-  // ── Hint copy ─────────────────────────────────────────
+  const checklist = useMemo(
+    () => (activityDetail ? getBeginnerChecklist(activityDetail) : []),
+    [activityDetail],
+  );
+  const similarActs = useMemo(
+    () =>
+      activityDetail
+        ? getSimilarActivities(activityDetail, selectedInterests)
+        : [],
+    [activityDetail, selectedInterests],
+  );
+  const saved = activityDetail ? isSaved(savedIds, activityDetail.id) : false;
+
   const hintText = useMemo(() => {
     if (expandedInterests.size === 0)
-      return "Tap an interest to explore its activities";
+      return "Tap an interest to reveal activities";
     if (!selectedId || interests.some((i) => i.id === selectedId))
-      return "Now tap an activity to learn more";
+      return "Tap an activity to explore it";
     return null;
   }, [expandedInterests, selectedId]);
 
@@ -195,7 +221,6 @@ export default function Home() {
       {screen === "splash" && (
         <LogoAnimation onComplete={() => setScreen("onboarding")} />
       )}
-
       {screen === "onboarding" && (
         <InterestOnboarding
           selected={selectedInterests}
@@ -203,7 +228,6 @@ export default function Home() {
           onConfirm={handleConfirmInterests}
         />
       )}
-
       {screen === "app" && (
         <main className="min-h-screen bg-[#FAF8F2] text-[#1A1916]">
           <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-5 py-7">
@@ -211,31 +235,43 @@ export default function Home() {
             <header className="mb-6 flex items-center justify-between">
               <button
                 onClick={() => setScreen("onboarding")}
-                className="flex items-center gap-2 group"
+                className="flex items-center gap-2"
               >
-                <span className="text-lg font-semibold tracking-tight text-[#1A1916]">
+                <span className="text-lg font-semibold tracking-tight">
                   aspect<span className="text-[#7F77DD]">·niche</span>
                 </span>
               </button>
               <div className="flex items-center gap-2">
                 {selectedInterests.map((id) => {
                   const color = INTEREST_COLORS[id] ?? "#7F77DD";
-                  const label = interests.find((i) => i.id === id)?.label;
                   return (
                     <span
                       key={id}
                       className="rounded-full px-2.5 py-1 text-xs font-medium"
                       style={{ background: `${color}14`, color }}
                     >
-                      {label}
+                      {interests.find((i) => i.id === id)?.label}
                     </span>
                   );
                 })}
+                {/* Saved button */}
                 <button
-                  onClick={() => setScreen("onboarding")}
-                  className="text-xs text-[#B0ADA8] hover:text-[#1A1916] transition-colors ml-1"
+                  onClick={() => setShowSaved(true)}
+                  className="relative flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium bg-white border border-[#E8E4DA] hover:border-[#D3D0C8] transition-colors ml-1"
                 >
-                  edit
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <path
+                      d="M2 1.5h8a.5.5 0 01.5.5v9L6 8.5 1.5 11V2a.5.5 0 01.5-.5z"
+                      stroke="#5A5855"
+                      strokeWidth="1.2"
+                      strokeLinejoin="round"
+                      fill={savedIds.length > 0 ? "#7F77DD" : "none"}
+                      strokeDasharray={savedIds.length > 0 ? "none" : "none"}
+                    />
+                  </svg>
+                  <span className="text-[#5A5855]">
+                    {savedIds.length > 0 ? `${savedIds.length} saved` : "Saved"}
+                  </span>
                 </button>
               </div>
             </header>
@@ -245,9 +281,7 @@ export default function Home() {
               <div className="rounded-3xl border border-[#E8E4DA] bg-white p-5 shadow-sm flex flex-col gap-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h2 className="text-base font-semibold text-[#1A1916]">
-                      Explore
-                    </h2>
+                    <h2 className="text-base font-semibold">Explore</h2>
                     {hintText && (
                       <p className="text-xs text-[#B0ADA8] mt-0.5">
                         {hintText}
@@ -256,7 +290,7 @@ export default function Home() {
                   </div>
                   <button
                     onClick={handleRandom}
-                    className="rounded-full px-4 py-2 text-xs font-semibold text-white transition-all hover:scale-105 hover:opacity-90 active:scale-95"
+                    className="rounded-full px-4 py-2 text-xs font-semibold text-white transition-all hover:scale-105 active:scale-95"
                     style={{
                       background: "#7F77DD",
                       boxShadow: "0 2px 10px #7F77DD35",
@@ -265,28 +299,23 @@ export default function Home() {
                     Surprise me
                   </button>
                 </div>
-
                 <GraphCanvas
                   nodes={allNodes}
                   edges={graphEdges}
                   selectedId={selectedId}
+                  expandedInterests={expandedInterests}
                   onSelectNode={handleSelectNode}
                 />
               </div>
 
               {/* Detail panel */}
-              <div className="rounded-3xl border border-[#E8E4DA] bg-white p-5 shadow-sm flex flex-col">
-                <h2 className="text-base font-semibold text-[#1A1916] mb-5">
-                  Details
-                </h2>
+              <div className="rounded-3xl border border-[#E8E4DA] bg-white p-5 shadow-sm flex flex-col overflow-y-auto max-h-[620px]">
+                <h2 className="text-base font-semibold mb-5">Details</h2>
 
-                {!detail ? (
-                  /* Empty state */
+                {/* ── Empty ── */}
+                {!detail && (
                   <div className="flex-1 flex flex-col items-center justify-center text-center py-8 gap-3">
-                    <div
-                      className="w-12 h-12 rounded-2xl flex items-center justify-center"
-                      style={{ background: "#F0EDE6" }}
-                    >
+                    <div className="w-12 h-12 rounded-2xl bg-[#F0EDE6] flex items-center justify-center">
                       <svg
                         width="20"
                         height="20"
@@ -305,14 +334,14 @@ export default function Home() {
                           x1="10"
                           y1="3"
                           x2="10"
-                          y2="5"
+                          y2="5.5"
                           stroke="#B0ADA8"
                           strokeWidth="1.5"
                           strokeLinecap="round"
                         />
                         <line
                           x1="10"
-                          y1="15"
+                          y1="14.5"
                           x2="10"
                           y2="17"
                           stroke="#B0ADA8"
@@ -322,14 +351,14 @@ export default function Home() {
                         <line
                           x1="3"
                           y1="10"
-                          x2="5"
+                          x2="5.5"
                           y2="10"
                           stroke="#B0ADA8"
                           strokeWidth="1.5"
                           strokeLinecap="round"
                         />
                         <line
-                          x1="15"
+                          x1="14.5"
                           y1="10"
                           x2="17"
                           y2="10"
@@ -340,16 +369,17 @@ export default function Home() {
                       </svg>
                     </div>
                     <p className="text-sm font-medium text-[#5A5855]">
-                      Nothing selected yet
+                      Nothing selected
                     </p>
                     <p className="text-xs text-[#B0ADA8] leading-relaxed max-w-[180px]">
-                      Tap an interest node to expand it, then tap an activity to
-                      explore it.
+                      Tap an interest to expand it, then pick an activity.
                     </p>
                   </div>
-                ) : detail.type === "interest" ? (
-                  /* Interest selected */
-                  <div className="flex-1 flex flex-col gap-4">
+                )}
+
+                {/* ── Interest ── */}
+                {detail?.type === "interest" && (
+                  <div className="flex flex-col gap-4">
                     <div
                       className="h-0.5 rounded-full w-8"
                       style={{ background: accentColor }}
@@ -364,20 +394,13 @@ export default function Home() {
                     </div>
                     <p className="text-sm text-[#5A5855] leading-relaxed">
                       {isExpanded
-                        ? `${(detail.data as (typeof interests)[0]).activityIds.length} activities are now visible in the graph. Tap any to explore it.`
-                        : "Tap this node in the graph to reveal its activities."}
+                        ? `${(detail.data as (typeof interests)[0]).activityIds.length} activities revealed. Tap any to explore.`
+                        : "Tap this node in the graph to reveal activities."}
                     </p>
-
-                    {/* Activity quick-tap pills */}
                     {isExpanded && (
-                      <div>
-                        <p className="text-[10px] uppercase tracking-widest text-[#B0ADA8] mb-2">
-                          Activities
-                        </p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {(
-                            detail.data as (typeof interests)[0]
-                          ).activityIds.map((id) => {
+                      <div className="flex flex-wrap gap-1.5">
+                        {(detail.data as (typeof interests)[0]).activityIds.map(
+                          (id) => {
                             const act = activities.find((a) => a.id === id);
                             return act ? (
                               <button
@@ -392,53 +415,76 @@ export default function Home() {
                                 {act.label}
                               </button>
                             ) : null;
-                          })}
-                        </div>
+                          },
+                        )}
                       </div>
                     )}
-
                     <button
                       onClick={() => handleSelectNode(detail.data.id)}
-                      className="mt-auto rounded-2xl py-3 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
+                      className="rounded-2xl py-3 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-95"
                       style={{ background: accentColor }}
                     >
                       {isExpanded ? "Collapse activities" : "Show activities →"}
                     </button>
                   </div>
-                ) : (
-                  /* Activity selected */
-                  <div className="flex-1 flex flex-col gap-4">
+                )}
+
+                {/* ── Activity ── */}
+                {detail?.type === "activity" && activityDetail && (
+                  <div className="flex flex-col gap-4">
                     <div
                       className="h-0.5 rounded-full w-8"
                       style={{ background: accentColor }}
                     />
-                    <div>
-                      <p className="text-[10px] uppercase tracking-widest text-[#B0ADA8] mb-1">
-                        Activity
-                      </p>
-                      <h3 className="text-2xl font-semibold tracking-tight leading-tight">
-                        {detail.data.label}
-                      </h3>
+
+                    {/* Title + save */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-[10px] uppercase tracking-widest text-[#B0ADA8] mb-1">
+                          Activity
+                        </p>
+                        <h3 className="text-2xl font-semibold tracking-tight leading-tight">
+                          {activityDetail.label}
+                        </h3>
+                      </div>
+                      <button
+                        onClick={() => handleToggleSave(activityDetail.id)}
+                        className="mt-1 w-9 h-9 rounded-full flex items-center justify-center transition-all hover:scale-110 active:scale-95 flex-shrink-0"
+                        style={{
+                          background: saved ? `${accentColor}18` : "#F0EDE6",
+                          border: saved
+                            ? `1.5px solid ${accentColor}40`
+                            : "1.5px solid transparent",
+                        }}
+                        title={saved ? "Remove from saved" : "Save activity"}
+                      >
+                        <svg
+                          width="16"
+                          height="16"
+                          viewBox="0 0 16 16"
+                          fill="none"
+                        >
+                          <path
+                            d="M3 2h10a.5.5 0 01.5.5v12L8 11.5 2.5 14.5V2.5A.5.5 0 013 2z"
+                            fill={saved ? accentColor : "none"}
+                            stroke={saved ? accentColor : "#9A9690"}
+                            strokeWidth="1.3"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
                     </div>
 
                     <p className="text-sm text-[#5A5855] leading-relaxed">
-                      {(detail.data as (typeof activities)[0]).description}
+                      {activityDetail.description}
                     </p>
 
-                    {/* Tag pills */}
+                    {/* Tags */}
                     <div className="flex flex-wrap gap-1.5">
                       {[
-                        diffLabel[
-                          (detail.data as (typeof activities)[0]).tags
-                            .difficulty
-                        ],
-                        envLabel[
-                          (detail.data as (typeof activities)[0]).tags
-                            .environment
-                        ],
-                        costLabel[
-                          (detail.data as (typeof activities)[0]).tags.cost
-                        ],
+                        diffLabel[activityDetail.tags.difficulty],
+                        envLabel[activityDetail.tags.environment],
+                        costLabel[activityDetail.tags.cost],
                       ].map((tag) => (
                         <span
                           key={tag}
@@ -453,30 +499,96 @@ export default function Home() {
                       ))}
                     </div>
 
+                    {/* Why this fits — only shown after Surprise me */}
+                    {randomReason && (
+                      <div
+                        className="rounded-xl p-3.5 flex gap-3"
+                        style={{ background: `${accentColor}0e` }}
+                      >
+                        <span className="text-base flex-shrink-0">✨</span>
+                        <div>
+                          <p
+                            className="text-[10px] uppercase tracking-widest mb-1"
+                            style={{ color: accentColor }}
+                          >
+                            Why this fits
+                          </p>
+                          <p className="text-xs text-[#1A1916] leading-relaxed">
+                            {randomReason}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Beginner tip */}
                     <div
                       className="rounded-xl p-3.5 flex gap-3"
                       style={{ background: "#FAF8F2" }}
                     >
-                      <span className="text-base flex-shrink-0 mt-0.5">💡</span>
+                      <span className="text-base flex-shrink-0">💡</span>
                       <div>
                         <p className="text-[10px] uppercase tracking-widest text-[#B0ADA8] mb-1">
                           First step
                         </p>
                         <p className="text-xs text-[#1A1916] leading-relaxed">
-                          {(detail.data as (typeof activities)[0]).beginnerTip}
+                          {activityDetail.beginnerTip}
                         </p>
                       </div>
                     </div>
 
+                    {/* Checklist */}
+                    <div>
+                      <p className="text-[10px] uppercase tracking-widest text-[#B0ADA8] mb-2">
+                        Getting started
+                      </p>
+                      <div className="flex flex-col gap-1.5">
+                        {checklist.map((step, i) => (
+                          <div key={i} className="flex items-start gap-2.5">
+                            <div
+                              className="w-4 h-4 rounded-full border-[1.5px] flex-shrink-0 mt-0.5"
+                              style={{ borderColor: `${accentColor}60` }}
+                            />
+                            <p className="text-xs text-[#5A5855] leading-relaxed">
+                              {step}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Similar activities */}
+                    {similarActs.length > 0 && (
+                      <div>
+                        <p className="text-[10px] uppercase tracking-widest text-[#B0ADA8] mb-2">
+                          You might also like
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {similarActs.map((a) => (
+                            <button
+                              key={a.id}
+                              onClick={() => {
+                                setSelectedId(a.id);
+                                setRandomReason(null);
+                              }}
+                              className="rounded-full px-2.5 py-1 text-xs font-medium transition-all hover:scale-105 active:scale-95"
+                              style={{
+                                background: `${ACTIVITY_COLORS[a.id] ?? "#7F77DD"}14`,
+                                color: ACTIVITY_COLORS[a.id] ?? "#7F77DD",
+                              }}
+                            >
+                              {a.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Find nearby */}
                     <a
-                      href={`https://www.google.com/maps/search/${encodeURIComponent(
-                        detail.data.label + " near me",
-                      )}`}
+                      href={`https://www.google.com/maps/search/${encodeURIComponent(activityDetail.label + " near me")}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="mt-auto rounded-2xl py-3 text-sm font-semibold text-white text-center transition-all hover:opacity-90 active:scale-95"
+                      className="rounded-2xl py-3 text-sm font-semibold text-white text-center transition-all hover:opacity-90 active:scale-95 mt-auto"
                       style={{
                         background: accentColor,
                         boxShadow: `0 4px 14px ${accentColor}35`,
@@ -490,7 +602,29 @@ export default function Home() {
               </div>
             </section>
           </div>
+
+          {/* Saved drawer */}
+          {showSaved && (
+            <SavedDrawer
+              savedIds={savedIds}
+              onSelect={(id) => {
+                setSelectedId(id);
+                setRandomReason(null);
+              }}
+              onUnsave={(id) => setSavedIds(toggleSaved(id))}
+              onClose={() => setShowSaved(false)}
+            />
+          )}
         </main>
+      )}
+      {/* Surprise card overlay */}
+      {surpriseActivity && randomReason && (
+        <SurpriseCard
+          activity={surpriseActivity}
+          interestIds={selectedInterests}
+          reason={randomReason}
+          onDismiss={() => setSurpriseActivity(null)}
+        />
       )}
     </>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { interests } from "@/data/activities";
+import { interests } from "../data/activities";
 
 interface Props {
   selected: string[];
