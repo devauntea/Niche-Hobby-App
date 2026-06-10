@@ -7,6 +7,11 @@ import LogoAnimation from "../components/LogoAnimation";
 import InterestOnboarding from "../components/InterestOnboarding";
 import SavedDrawer from "../components/SavedDrawer";
 import { activities, interests } from "../data/activities";
+import NicheMode from "../components/NicheMode";
+import ResourceLinks from "../components/ResourceLinks";
+import { nicheContent } from "../data/nicheContent";
+import { getResources } from "../data/resources";
+
 import {
   buildInterestNodes,
   buildActivityNodes,
@@ -70,6 +75,7 @@ const costLabel: Record<string, string> = {
   high: "Investment",
 };
 
+//states
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("splash");
   const [selectedInterests, setSelectedInterests] = useState<string[]>([]);
@@ -83,6 +89,7 @@ export default function Home() {
   const [surpriseActivity, setSurpriseActivity] = useState<
     (typeof activities)[0] | null
   >(null);
+  const [isNicheMode, setIsNicheMode] = useState(false);
 
   // ── Onboarding ─────────────────────────────────────────
   function toggleInterest(id: string) {
@@ -139,6 +146,7 @@ export default function Home() {
   const handleSelectNode = useCallback((id: string) => {
     const isInterest = interests.some((i) => i.id === id);
     setRandomReason(null);
+    setIsNicheMode(false);
     if (isInterest) {
       setExpandedInterests((prev) => {
         const next = new Set(prev);
@@ -170,6 +178,7 @@ export default function Home() {
     const reason = getWhyItFits(pick, selectedInterests);
     setRandomReason(reason);
     setSelectedId(pick.id);
+    setIsNicheMode(false);
     setSurpriseActivity(pick);
   }
 
@@ -475,9 +484,73 @@ export default function Home() {
                       </button>
                     </div>
 
-                    <p className="text-sm text-[#5A5855] leading-relaxed">
-                      {activityDetail.description}
-                    </p>
+                    {/* Niche mode toggle */}
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-[#5A5855] leading-relaxed flex-1 mr-3">
+                        {isNicheMode && nicheContent[activityDetail.id]
+                          ? nicheContent[activityDetail.id].description
+                          : activityDetail.description}
+                      </p>
+                      <NicheMode
+                        isNiche={isNicheMode}
+                        onToggle={() => setIsNicheMode((n) => !n)}
+                        accentColor={accentColor}
+                      />
+                    </div>
+
+                    {/* Niche content */}
+                    {isNicheMode && nicheContent[activityDetail.id] && (
+                      <div
+                        className="rounded-xl p-3.5 flex flex-col gap-2.5"
+                        style={{
+                          background: `${accentColor}08`,
+                          border: `1px solid ${accentColor}20`,
+                        }}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="text-[10px] uppercase tracking-widest font-semibold"
+                            style={{ color: accentColor }}
+                          >
+                            ◆ {nicheContent[activityDetail.id].nicheLabel}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-1.5">
+                          {nicheContent[activityDetail.id].rabbitHoles.map(
+                            (hole, i) => (
+                              <div key={i} className="flex items-start gap-2">
+                                <span
+                                  className="text-xs mt-0.5 flex-shrink-0"
+                                  style={{ color: accentColor }}
+                                >
+                                  →
+                                </span>
+                                <p className="text-xs text-[#5A5855] leading-relaxed">
+                                  {hole}
+                                </p>
+                              </div>
+                            ),
+                          )}
+                        </div>
+                        <div
+                          className="rounded-lg p-2.5 mt-1"
+                          style={{ background: `${accentColor}10` }}
+                        >
+                          <span className="text-[10px] uppercase tracking-widest text-[#B0ADA8]">
+                            Insider term:{" "}
+                          </span>
+                          <span
+                            className="text-xs font-semibold"
+                            style={{ color: accentColor }}
+                          >
+                            {nicheContent[activityDetail.id].insiderTerm}
+                          </span>
+                          <p className="text-[11px] text-[#5A5855] mt-1 leading-relaxed">
+                            {nicheContent[activityDetail.id].insiderDefinition}
+                          </p>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Tags */}
                     <div className="flex flex-wrap gap-1.5">
@@ -582,6 +655,15 @@ export default function Home() {
                         </div>
                       </div>
                     )}
+
+                    {/* Resource links */}
+                    <ResourceLinks
+                      resources={getResources(
+                        activityDetail.id,
+                        activityDetail.label,
+                      )}
+                      accentColor={accentColor}
+                    />
 
                     {/* Find nearby */}
                     <a
